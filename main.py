@@ -437,7 +437,7 @@ class SwingmanApp:
         """Generate and display heatmap"""
         if len(self.heatmap_generator.normalized_impacts) > 0:
             heatmap_img = self.heatmap_generator.generate_heatmap_image()
-            cv2.imshow("Swing Impact Heatmap", heatmap_img)
+            # cv2.imshow("Swing Impact Heatmap", heatmap_img)
             
             # Save to session directory
             session_dir = os.path.join(self.args.output_dir, self.data_manager.current_session["id"])
@@ -506,7 +506,7 @@ class SwingmanApp:
             processed_frame = self.process_frame(frame)
             
             # Display frame
-            cv2.imshow(self.window_name, processed_frame)
+            # cv2.imshow(self.window_name, processed_frame)
             
             # Update FPS counter
             self.update_fps()
