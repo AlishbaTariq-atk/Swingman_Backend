@@ -1,0 +1,45 @@
+# Python Version
+python>=3.9.0
+
+# Core Computer Vision
+opencv-python>=4.8.0
+numpy>=1.21.0
+pillow>=9.0.0
+
+# Deep Learning & ML
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.0.0  # YOLO implementation
+mediapipe>=0.10.0   # Pose detection
+
+# Data Processing & Analysis
+scipy>=1.9.0
+pandas>=2.0.0
+matplotlib>=3.5.0
+
+# Optimization & Performance
+numba>=0.56.0       # For performance optimization
+pycocotools>=2.0.6  # For object detection
+
+# Video Processing
+av>=10.0.0          # For efficient video handling
+imageio>=2.31.0     # For image sequence handling
+
+# iOS Compatibility
+coremltools>=6.3.0  # For iOS model conversion
+onnx>=1.14.0        # For model format conversion
+onnxruntime>=1.15.0 # For optimized inference
+
+# Testing & Development
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.3.0       # Code formatting
+
+# Progress Bars & UI
+tqdm>=4.64.0
+rich>=13.4.0        # For enhanced terminal output
+
+# Optional - GPU Support
+# Uncomment if GPU acceleration is needed
+# torch-directml>=0.2.0  # DirectML backend for Windows
+# torch-cuda>=2.0.0     # CUDA support for NVIDIA GPUs
