@@ -89,5 +89,5 @@ async def websocket_endpoint(websocket: WebSocket):
         await asyncio.to_thread(session.end_session_and_get_artifacts)
     finally:
         print("Closing server-side connection.")
-        if not websocket.client_state == WebSocketState.DISCONNECTED:
-            await websocket.close()
+        # if not websocket.client_state == WebSocketState.DISCONNECTED:
+        #     await websocket.close()

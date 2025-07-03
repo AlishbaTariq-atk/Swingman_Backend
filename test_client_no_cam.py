@@ -90,6 +90,8 @@ if __name__ == "__main__":
     network_thread = threading.Thread(target=network_thread_entrypoint, args=(frame_queue,), daemon=True)
     network_thread.start()
 
+    time.sleep(2.0)
+
     print(f"Loading test image from {TEST_IMAGE_PATH}...")
     try:
         frame = cv2.imread(TEST_IMAGE_PATH)
