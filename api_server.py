@@ -6,7 +6,7 @@ import asyncio
 from typing import Dict, Any
 import numpy as np
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, WebSocketState
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from core.enhanced_swing_tracker import EnhancedSwingTracker
@@ -88,5 +88,5 @@ async def websocket_endpoint(websocket: WebSocket):
         await asyncio.to_thread(session.end_session_and_get_artifacts)
     finally:
         print("Closing server-side connection.")
-        if not websocket.client_state == WebSocketState.DISCONNECTED:
+        if not websocket.client_state == websocket.WebSocketState.DISCONNECTED:
             await websocket.close()
