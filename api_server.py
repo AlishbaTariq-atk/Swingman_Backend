@@ -6,7 +6,7 @@ import asyncio
 from typing import Dict, Any
 import numpy as np
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, WebSocketState
 from pydantic import BaseModel
 
 from core.enhanced_swing_tracker import EnhancedSwingTracker
@@ -87,9 +87,6 @@ async def websocket_endpoint(websocket: WebSocket):
         # Still run the cleanup, but don't try to send anything back.
         await asyncio.to_thread(session.end_session_and_get_artifacts)
     finally:
-        # --- REFINED CLEANUP ---
-        # The finally block runs *after* the try/except.
-        # We only need to ensure the connection is closed.
-        # The 'break' in the loop or the exception handler already dealt with artifacts.
         print("Closing server-side connection.")
-        await websocket.close()
+        if not websocket.client_state == WebSocketState.DISCONNECTED:
+            await websocket.close()
