@@ -7,7 +7,7 @@ import threading
 import queue  # Use the standard thread-safe queue
 
 # --- Configuration ---
-SERVER_URL = "ws://localhost:8001/ws/v1/swing_analysis"
+SERVER_URL = "ws://localhost:8000/ws/v1/swing_analysis"
 JPEG_QUALITY = 80
 
 # A thread-safe flag to signal shutdown
