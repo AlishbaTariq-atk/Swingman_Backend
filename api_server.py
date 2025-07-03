@@ -4,6 +4,7 @@ import base64
 import json
 import asyncio
 from typing import Dict, Any
+import numpy as np
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel

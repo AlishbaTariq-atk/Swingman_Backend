@@ -6,7 +6,7 @@ import base64
 import threading
 import queue
 
-SERVER_URL = "ws://localhost:8001/ws/v1/swing_analysis" # Ensure port is correct
+SERVER_URL = "ws://localhost:8000/ws/v1/swing_analysis" # Ensure port is correct
 JPEG_QUALITY = 80
 
 # Use threading Events for clearer and safer cross-thread communication
