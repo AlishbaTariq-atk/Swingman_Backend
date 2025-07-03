@@ -1,3 +1,6 @@
 .*
-!.gitignore
-_*
+.venv/
+__pycache__/
+*.pyc
+output/
+client_output/
