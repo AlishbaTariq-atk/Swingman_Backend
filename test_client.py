@@ -1,143 +1,140 @@
-import os
-os.environ["QT_QPA_PLATFORM"] = "xcb"
-import asyncio
-import websockets
 import cv2
-import json
+import requests
 import base64
-import threading
-import queue
+import numpy as np
 import time
-import logging
-
-# --- Setup Logging ---
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
-log = logging.getLogger(__name__)
 
 # --- Configuration ---
-SERVER_URL = "ws://localhost:8000/ws/v1/swing_analysis"
-JPEG_QUALITY = 80
+API_URL = "http://127.0.0.1:8000"  # URL of your running FastAPI server
 
-# --- Thread-Safe Queues for Communication ---
-frame_queue = queue.Queue(maxsize=30)
-client_actions = queue.Queue()
-shutdown_event = threading.Event()
+def frame_to_base64(frame: np.ndarray) -> str:
+    """Encodes an OpenCV image (frame) to a Base64 string."""
+    _, buffer = cv2.imencode('.jpg', frame)
+    return base64.b64encode(buffer).decode('utf-8')
 
-# --- Network Thread Functions ---
+def base64_to_frame(b64_string: str) -> np.ndarray:
+    """Decodes a Base64 string to an OpenCV image (frame)."""
+    img_bytes = base64.b64decode(b64_string)
+    img_arr = np.frombuffer(img_bytes, dtype=np.uint8)
+    frame = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+    return frame
 
-async def network_loop(frame_q, action_q, shutdown_evt):
-    """The core asyncio loop that runs in a separate thread."""
-    log.info("[NET] Network thread started.")
-    try:
-        async with websockets.connect(SERVER_URL, ping_interval=None) as websocket:
-            log.info(f"[NET] ✅ Connected to {SERVER_URL}")
-            is_swinging = False
-
-            while not shutdown_evt.is_set():
-                # Check for actions from the main GUI thread
-                try:
-                    action = action_q.get_nowait()
-                    log.info(f"[NET] Sending action: {action}")
-                    await websocket.send(json.dumps({"action": action}))
-                    if action == 'start_swing': is_swinging = True
-                    if action == 'stop_swing': is_swinging = False
-                    if action == 'stop_session': break
-                except queue.Empty:
-                    pass
-
-                # If swinging, send a frame
-                if is_swinging:
-                    try:
-                        frame = frame_q.get_nowait()
-                        _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
-                        await websocket.send(buffer.tobytes())
-                    except queue.Empty:
-                        pass # No frame, continue
-
-                # Listen for server messages (non-blocking)
-                try:
-                    msg = await asyncio.wait_for(websocket.recv(), timeout=0.01)
-                    data = json.loads(msg)
-                    msg_type = data.get('type')
-
-                    if msg_type == 'swing_analysis_complete':
-                        swing_data = data.get('payload', {}).get('swing_data', {})
-                        log.info(f"\n--- SWING ANALYSIS ---")
-                        log.info(f"  Efficiency: {swing_data.get('efficiency_score')}% | Power: {swing_data.get('power_score')}%")
-                    elif msg_type == 'session_end':
-                        log.info("\n--- FINAL ARTIFACTS ---")
-                        artifacts = data.get('payload', {}).get('session_artifacts', {})
-                        if artifacts.get('heatmap_image'):
-                            with open("final_heatmap.png", "wb") as f: f.write(base64.b64decode(artifacts['heatmap_image']))
-                            log.info("  ✅ Heatmap saved.")
-                        if artifacts.get('session_csv'):
-                            with open("final_summary.csv", "w") as f: f.write(artifacts['session_csv'])
-                            log.info("  ✅ CSV summary saved.")
-                        break
-                except asyncio.TimeoutError:
-                    pass
-    except Exception as e:
-        log.error(f"[NET] ❌ Network error: {e}")
-    finally:
-        shutdown_evt.set()
-        log.info("[NET] Network thread finished.")
-
-# --- Main Thread (GUI and Camera) ---
-
-if __name__ == "__main__":
-    # 1. Start the network thread
-    network_thread = threading.Thread(
-        target=lambda: asyncio.run(network_loop(frame_queue, client_actions, shutdown_event)),
-        daemon=True
-    )
-    network_thread.start()
+def main():
+    """Main function to run the test client."""
     
-    # Give the network thread a moment to connect
-    time.sleep(2)
-    if not network_thread.is_alive():
-        log.error("Network thread failed to start. Is the server running? Exiting.")
-        exit()
+    # 1. Start a new session
+    print("🚀 Starting new session...")
+    try:
+        response = requests.post(f"{API_URL}/session/start", json={"session_name": "test_client_session"})
+        response.raise_for_status()  # Raises an exception for bad status codes (4xx or 5xx)
+        session_data = response.json()
+        session_id = session_data.get("session_id")
+        if not session_id:
+            print("❌ Error: Could not get session_id from server.")
+            return
+        print(f"✅ Session started successfully. Session ID: {session_id}")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error connecting to the API: {e}")
+        print("   Please ensure the `uvicorn api_server:app --reload` server is running.")
+        return
 
-    # 2. Start the camera
-    log.info("[GUI] Starting webcam...")
+    # 2. Setup camera
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        log.error("[GUI] Could not open webcam.")
-        shutdown_event.set()
-    else:
-        log.info("\n--- Controls (in window) ---\n'b' - Begin Swing\n'e' - End Swing\n'q' - Quit Session\n--------------")
+        print("❌ Error: Could not open webcam.")
+        return
 
-    # 3. Run the main GUI loop
-    while cap.isOpened() and not shutdown_event.is_set():
+    cv2.namedWindow("API Test Client", cv2.WINDOW_NORMAL)
+    
+    tracking = False
+    
+    print("\n--- Controls ---")
+    print("  't' - Start Tracking")
+    print("  's' - Stop Tracking & Analyze")
+    print("  'q' - Quit")
+    print("----------------\n")
+
+
+    while True:
         ret, frame = cap.read()
         if not ret:
-            log.error("[GUI] Failed to grab frame.")
+            print("❌ Error reading frame from webcam.")
             break
 
-        cv2.imshow("Webcam Feed", frame)
+        display_frame = frame.copy()
+        
+        key = cv2.waitKey(1) & 0xFF
 
-        # Put frame in queue for the network thread
-        if not frame_queue.full():
-            frame_queue.put(frame)
+        if key == ord('q'):
+            break
+        
+        elif key == ord('t') and not tracking:
+            # 3. Start tracking
+            print("\n▶️  Sending START TRACKING request...")
+            try:
+                response = requests.post(f"{API_URL}/session/{session_id}/start_tracking")
+                response.raise_for_status()
+                print("✅ Tracking started on server.")
+                tracking = True
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Error starting tracking: {e.response.json()}")
 
-        key = cv2.waitKey(1)
-        if key != -1:
-            if key & 0xFF == ord('b'):
-                log.info("[GUI] Queuing START swing action.")
-                client_actions.put('start_swing')
-            elif key & 0xFF == ord('e'):
-                log.info("[GUI] Queuing STOP swing action.")
-                client_actions.put('stop_swing')
-            elif key & 0xFF == ord('q'):
-                log.info("[GUI] 'q' pressed. Shutting down.")
-                client_actions.put('stop_session')
-                shutdown_event.set()
-                break
-    
-    # 4. Cleanup
-    log.info("Waiting for network thread to finish...")
-    network_thread.join(timeout=5)
-    
+        elif key == ord('s') and tracking:
+            # 5. Stop tracking
+            print("\n⏹️  Sending STOP TRACKING request...")
+            try:
+                b64_frame = frame_to_base64(frame)
+                response = requests.post(
+                    f"{API_URL}/session/{session_id}/stop_tracking",
+                    json={"frame": b64_frame}
+                )
+                response.raise_for_status()
+                tracking = False
+                final_data = response.json()
+                print("✅ Swing analysis complete!")
+                print("--- Final Metrics ---")
+                for k, v in final_data.get("data", {}).items():
+                    print(f"  {k}: {v}")
+                print("---------------------\n")
+                
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Error stopping tracking: {e.response.json()}")
+                tracking = False # Reset state
+
+        if tracking:
+            # 4. Process frame
+            try:
+                b64_frame = frame_to_base64(frame)
+                
+                start_time = time.time()
+                response = requests.post(
+                    f"{API_URL}/session/{session_id}/process_frame",
+                    json={"frame": b64_frame}
+                )
+                response.raise_for_status()
+                end_time = time.time()
+
+                data = response.json()
+                processed_b64 = data.get("processed_frame")
+                
+                # Update the display frame with the processed one from the server
+                display_frame = base64_to_frame(processed_b64)
+                
+                # Display network latency
+                latency = (end_time - start_time) * 1000
+                cv2.putText(display_frame, f"API Latency: {latency:.0f} ms", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Error processing frame: {e.response.json()}")
+                # Stop tracking if a processing error occurs
+                tracking = False
+
+        cv2.imshow("API Test Client", display_frame)
+
+    print("🔌 Cleaning up...")
     cap.release()
     cv2.destroyAllWindows()
-    log.info("Application finished.")
+    print("👋 Client shut down.")
+
+if __name__ == "__main__":
+    main()
