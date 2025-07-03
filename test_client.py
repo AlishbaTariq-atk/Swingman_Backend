@@ -2,11 +2,12 @@ import asyncio
 import websockets
 import cv2
 import json
+import base64
 import threading
 import queue  # Use the standard thread-safe queue
 
 # --- Configuration ---
-SERVER_URL = "ws://localhost:8000/ws/v1/swing_analysis"
+SERVER_URL = "ws://localhost:8001/ws/v1/swing_analysis"
 JPEG_QUALITY = 80
 
 # A thread-safe flag to signal shutdown
@@ -28,30 +29,62 @@ def network_thread_entrypoint(frame_queue: queue.Queue):
                 async def send_frames():
                     while running:
                         try:
-                            # Get a frame from the queue without blocking the event loop
                             frame = frame_queue.get_nowait()
                             _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
                             await websocket.send(buffer.tobytes())
                             frame_queue.task_done()
                         except queue.Empty:
-                            # Queue is empty, wait briefly to yield control
                             await asyncio.sleep(0.01)
                         except websockets.exceptions.ConnectionClosed:
                             break
                     
                     if not websocket.closed:
                         print("Network thread: Sending stop_session command...")
+                        # This command name must match your api_server.py
                         await websocket.send(json.dumps({"action": "stop_session"}))
 
                 # Task to continuously receive messages from the server
                 async def receive_messages():
+                    global running
                     while running:
                         try:
                             message_str = await asyncio.wait_for(websocket.recv(), timeout=0.1)
-                            # In a real app, you would process this. For now, we just print.
-                            print(f"Received: {json.loads(message_str)}")
+                            message = json.loads(message_str)
+                            msg_type = message.get("type")
+
+                            # --- THIS IS THE ADDED LOGIC ---
+                            if msg_type == "session_end":
+                                print("\n--- FINAL ARTIFACTS RECEIVED ---")
+                                payload = message.get("payload", {})
+                                
+                                # 1. Save Heatmap Image
+                                if 'heatmap_image' in payload:
+                                    try:
+                                        heatmap_data = base64.b64decode(payload['heatmap_image'])
+                                        with open("final_heatmap.png", "wb") as f:
+                                            f.write(heatmap_data)
+                                        print("✅ Heatmap saved to final_heatmap.png")
+                                    except Exception as e:
+                                        print(f"Error saving heatmap: {e}")
+
+                                # 2. Save CSV Summary
+                                if 'session_csv' in payload:
+                                    try:
+                                        with open("final_summary.csv", "w") as f:
+                                            f.write(payload['session_csv'])
+                                        print("✅ Session summary saved to final_summary.csv")
+                                    except Exception as e:
+                                        print(f"Error saving CSV: {e}")
+                                
+                                # Signal the application to shut down
+                                running = False
+                                break # Exit the receiving loop
+                            else:
+                                # For other messages like tracking updates, just print them
+                                print(f"Received: {message}")
+
                         except asyncio.TimeoutError:
-                            continue # No message received, continue loop
+                            continue
                         except websockets.exceptions.ConnectionClosed:
                             print("Network thread: Connection closed by server.")
                             break
@@ -61,11 +94,9 @@ def network_thread_entrypoint(frame_queue: queue.Queue):
         except Exception as e:
             print(f"Network thread error: {e}")
         finally:
-            # Ensure the main loop knows we are done
             running = False
             print("Network thread finished.")
 
-    # Start the asyncio event loop for this background thread
     asyncio.run(main_network_loop())
 
 
@@ -73,14 +104,10 @@ if __name__ == "__main__":
     """
     The Main Thread. It handles all GUI operations (OpenCV).
     """
-    # A standard, thread-safe queue to pass frames to the network thread
     frame_queue = queue.Queue(maxsize=10)
-
-    # Create and start the background thread for networking
     network_thread = threading.Thread(target=network_thread_entrypoint, args=(frame_queue,), daemon=True)
     network_thread.start()
 
-    # --- OpenCV Main Loop ---
     print("Starting webcam... Press 'q' in the window to stop.")
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -90,26 +117,21 @@ if __name__ == "__main__":
         while running:
             ret, frame = cap.read()
             if not ret:
-                print("Error: Could not read frame.")
                 break
 
-            # Display the webcam feed. This is now on the main thread.
-            cv2.imshow("Webcam Feed", frame)
+            cv2.imshow("Webcam Feed (Press 'q' to stop)", frame)
 
-            # Put the frame into the queue for the network thread to send
             if not frame_queue.full():
                 frame_queue.put(frame)
 
-            # Check for the 'q' key to quit
             key = cv2.waitKey(1)
             if key & 0xFF == ord('q'):
                 print("'q' pressed. Shutting down...")
                 running = False
                 break
     
-    # --- Cleanup ---
     print("Waiting for network thread to finish...")
-    network_thread.join(timeout=2.0) # Wait for the thread to exit gracefully
+    network_thread.join(timeout=3.0)
 
     cap.release()
     cv2.destroyAllWindows()
