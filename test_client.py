@@ -3,91 +3,141 @@ import websockets
 import cv2
 import json
 import base64
+import threading
 
+# --- Configuration ---
 SERVER_URL = "ws://localhost:8000/ws/v1/swing_analysis"
+JPEG_QUALITY = 80 # 0-100, higher is better quality, larger size
 
-async def run_test():
+# A thread-safe flag to signal when to stop
+running = True
+
+def capture_and_display_thread(queue: asyncio.Queue, loop: asyncio.AbstractEventLoop):
     """
-    Connects to the server, streams webcam frames, and handles responses.
+    This function runs in a separate thread and handles all blocking
+    OpenCV operations.
     """
-    async with websockets.connect(SERVER_URL) as websocket:
-        print("Connected to Swingman API server.")
+    global running
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Error: Could not open webcam.")
+        running = False
+        return
+
+    print("\nWebcam feed running. Press 'q' in the window to stop.")
+
+    while running:
+        ret, frame = cap.read()
+        if not ret:
+            print("Error: Could not read frame from webcam.")
+            break
+
+        # Display the frame locally. This window will be responsive.
+        cv2.imshow("Webcam Feed (Press 'q' to stop)", frame)
+
+        # Put the frame into the asyncio queue in a thread-safe manner
+        if not queue.full():
+            loop.call_soon_threadsafe(queue.put_nowait, frame)
         
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            print("Error: Could not open webcam.")
-            return
+        # Check for 'q' key to quit. This is now highly responsive.
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("'q' pressed, signaling shutdown...")
+            running = False
+            break
+    
+    # Cleanup
+    cap.release()
+    cv2.destroyAllWindows()
+    print("Webcam thread finished.")
 
-        # Coroutine to listen for messages from the server
-        async def receive_messages():
-            try:
-                while True:
-                    message_str = await websocket.recv()
-                    message = json.loads(message_str)
-                    msg_type = message.get("type")
 
-                    if msg_type == "tracking_update":
-                        efficiency = message['payload']['metrics'].get('efficiency_score', 0)
-                        power = message['payload']['metrics'].get('power_score', 0)
-                        print(f"LIVE DATA | Efficiency: {efficiency}%, Power: {power}%")
-                    
-                    elif msg_type == "session_end":
-                        print("\n--- FINAL ARTIFACTS RECEIVED ---")
-                        # 1. Save Heatmap
-                        heatmap_b64 = message['payload']['heatmap_image']
-                        heatmap_data = base64.b64decode(heatmap_b64)
-                        with open("final_heatmap.png", "wb") as f:
-                            f.write(heatmap_data)
-                        print("✅ Heatmap saved to final_heatmap.png")
-                        
-                        # 2. Save CSV
-                        csv_data = message['payload']['session_csv']
-                        with open("final_summary.csv", "w") as f:
-                            f.write(csv_data)
-                        print("✅ Session summary saved to final_summary.csv")
-                        
-                        break # End the listener loop
-                        
-            except websockets.exceptions.ConnectionClosed:
-                print("Connection closed by server.")
+async def network_tasks(queue: asyncio.Queue):
+    """
+    This function runs in the main asyncio thread and handles all
+    network communication.
+    """
+    global running
+    async with websockets.connect(SERVER_URL) as websocket:
+        print(f"✅ Connected to server at {SERVER_URL}")
 
-        # Coroutine to send frames to the server
+        # Task to send frames from the queue to the server
         async def send_frames():
-            print("\nStreaming frames... Press 'q' in the webcam window to stop.")
-            while True:
-                ret, frame = cap.read()
-                if not ret:
+            while running:
+                try:
+                    # Get a frame from the queue, waiting up to 0.1s
+                    frame = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    
+                    # Encode and send
+                    _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+                    await websocket.send(buffer.tobytes())
+                    
+                    queue.task_done()
+                except asyncio.TimeoutError:
+                    # If queue is empty, just continue. This keeps the loop alive.
+                    continue
+                except websockets.exceptions.ConnectionClosed:
                     break
-
-                # Display the frame locally so you can see what's being sent
-                cv2.imshow("Webcam Feed (Press 'q' to stop)", frame)
-
-                # Encode frame as JPEG for efficient network transfer
-                _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                
-                await websocket.send(buffer.tobytes())
-
-                # Poll for 'q' key to quit, and give server time to process
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-                
-                await asyncio.sleep(1/30) # Stream at ~30 FPS
-
-            # Signal stop to the server
-            print("Stopping session and requesting final artifacts...")
-            await websocket.send(json.dumps({"action": "stop"}))
             
-            # Cleanup
-            cap.release()
-            cv2.destroyAllWindows()
+            # After the loop, signal the server to stop the session
+            if not websocket.closed:
+                print("Sending stop_session command to server...")
+                # Use a different action from your final API spec if needed
+                await websocket.send(json.dumps({"action": "stop_session"}))
 
-        # Run both tasks concurrently
-        await asyncio.gather(
-            send_frames(),
-            receive_messages()
-        )
-        print("\nTest client finished.")
+
+        # Task to receive messages from the server
+        async def receive_messages():
+            while running:
+                try:
+                    message_str = await asyncio.wait_for(websocket.recv(), timeout=0.1)
+                    message = json.loads(message_str)
+                    
+                    # Process different message types
+                    if message.get("type") == "session_end":
+                        print("\n--- FINAL ARTIFACTS RECEIVED ---")
+                        payload = message['payload']
+                        with open("final_heatmap.png", "wb") as f:
+                            f.write(base64.b64decode(payload['heatmap_image']))
+                        print("✅ Heatmap saved to final_heatmap.png")
+                        with open("final_summary.csv", "w") as f:
+                            f.write(payload['session_csv'])
+                        print("✅ Session summary saved to final_summary.csv")
+                        break # Exit after receiving final artifacts
+                    else:
+                        # Print any other messages like tracking updates
+                        print(f"Received: {message}")
+
+                except asyncio.TimeoutError:
+                    continue
+                except websockets.exceptions.ConnectionClosed:
+                    print("Connection closed by server.")
+                    break
+
+        # Run both network tasks concurrently
+        await asyncio.gather(send_frames(), receive_messages())
+
+
+async def main():
+    """ Main entry point for the application. """
+    # A queue to pass frames from the GUI thread to the network thread
+    frame_queue = asyncio.Queue(maxsize=10)
+    
+    # Get the current asyncio event loop
+    loop = asyncio.get_running_loop()
+
+    # Start the blocking GUI function in a separate thread
+    # This is the key to a responsive UI
+    gui_thread = threading.Thread(target=capture_and_display_thread, args=(frame_queue, loop), daemon=True)
+    gui_thread.start()
+
+    # Run the non-blocking network tasks
+    await network_tasks(frame_queue)
+
+    print("\nTest client finished.")
 
 
 if __name__ == "__main__":
-    asyncio.run(run_test())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Program interrupted.")
